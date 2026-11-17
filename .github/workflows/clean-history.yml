@@ -1,0 +1,51 @@
+name: Clean Git History (Safe)
+
+on:
+  workflow_dispatch:   # manual trigger only — no accidental runs
+
+jobs:
+  reset-history:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # required for force-push
+
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # MUST be 0 — shallow checkout breaks orphan logic[reference:1]
+
+      - name: Configure Git
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Create backup branch
+        run: |
+          set -e
+          BRANCH="${{ github.ref_name }}"
+          BACKUP="backup-old-history-$(date +%Y%m%d-%H%M%S)"
+          echo "BACKUP_BRANCH=$BACKUP" >> $GITHUB_ENV
+          echo "TARGET_BRANCH=$BRANCH" >> $GITHUB_ENV
+          git branch "$BACKUP" "$BRANCH"
+          git push origin "$BACKUP"
+          echo "✅ Backup pushed to $BACKUP"
+
+      - name: Create orphan branch and reset history
+        run: |
+          set -e
+          BRANCH="${{ env.TARGET_BRANCH }}"
+          TEMP="clean_temp"
+
+          git checkout --orphan "$TEMP"
+          git add -A
+          git commit -m "Initial commit (clean history)"
+          git branch -D "$BRANCH" || true
+          git branch -m "$BRANCH"
+
+      - name: Force-push safely with lease
+        run: |
+          set -e
+          BRANCH="${{ env.TARGET_BRANCH }}"
+          git push --force-with-lease origin "$BRANCH"
+          echo "✅ History wiped. Backup is on: ${{ env.BACKUP_BRANCH }}"

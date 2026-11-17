@@ -1,0 +1,212 @@
+name: Encrypt Python sources (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type CONFIRM to run encryption (protects against accidental clicks)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+
+  encrypt:
+    name: Encrypt daily.py + daily9.py
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+
+      # ---------------------------------------------------------
+      # GUARD 1 — typed confirmation
+      # ---------------------------------------------------------
+      - name: 🛑 Require CONFIRM
+        if: github.event.inputs.confirm != 'CONFIRM'
+        run: |
+          echo "❌ You must type CONFIRM (exact, uppercase) to run encryption."
+          echo "   Received: '${{ github.event.inputs.confirm }}'"
+          exit 1
+
+      # ---------------------------------------------------------
+      # GUARD 2 — secret must be present (never printed)
+      # ---------------------------------------------------------
+      - name: 🔑 Verify secret present
+        env:
+          CODE_ENCRYPTION_PASSWORD: ${{ secrets.CODE_ENCRYPTION_PASSWORD }}
+        run: |
+          if [ -z "${CODE_ENCRYPTION_PASSWORD:-}" ]; then
+            echo "❌ CODE_ENCRYPTION_PASSWORD secret is not set in this repo."
+            echo "   Set it under Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+          echo "✅ Secret present (length: ${#CODE_ENCRYPTION_PASSWORD} chars)"
+
+      # ---------------------------------------------------------
+      # CHECKOUT
+      # ---------------------------------------------------------
+      - name: 🧾 Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      # ---------------------------------------------------------
+      # PYTHON
+      # ---------------------------------------------------------
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 📦 Install cryptography
+        run: |
+          python -m pip install --quiet --disable-pip-version-check cryptography
+
+      # ---------------------------------------------------------
+      # PRE-STATE — which targets exist and are plaintext?
+      # ---------------------------------------------------------
+      - name: 📋 Pre-flight check
+        run: |
+          echo "=== Pre-flight ==="
+          for f in daily.py daily9.py; do
+            if [ ! -f "$f" ]; then
+              echo "❌ missing file: $f"
+              exit 1
+            fi
+            head=$(head -c6 "$f")
+            if [ "$head" = "PYENC1" ]; then
+              echo "🔐 $f — already encrypted (will be skipped)"
+            else
+              echo "📄 $f — plaintext (will be encrypted)"
+            fi
+          done
+
+      # ---------------------------------------------------------
+      # ENCRYPT
+      # ---------------------------------------------------------
+      - name: 🔐 Run encrypt_py_files.py
+        env:
+          CODE_ENCRYPTION_PASSWORD: ${{ secrets.CODE_ENCRYPTION_PASSWORD }}
+        run: |
+          python encrypt_py_files.py
+          # unset immediately (belt and braces — runner is ephemeral anyway)
+          unset CODE_ENCRYPTION_PASSWORD
+
+      # ---------------------------------------------------------
+      # POST-STATE — nothing plaintext remains
+      # ---------------------------------------------------------
+      - name: ✅ Verify encryption
+        run: |
+          echo "=== Post-flight ==="
+          FAIL=0
+          for f in daily.py daily9.py; do
+            head=$(head -c6 "$f")
+            if [ "$head" = "PYENC1" ]; then
+              echo "🔐 $f — encrypted OK"
+            else
+              echo "❌ $f — STILL PLAINTEXT"
+              FAIL=1
+            fi
+          done
+          if [ "$FAIL" -eq 1 ]; then
+            echo "❌ Encryption incomplete — aborting before commit."
+            exit 1
+          fi
+
+      # ---------------------------------------------------------
+      # EXTRA SAFETY — ensure we are not about to commit any secret
+      # ---------------------------------------------------------
+      - name: 🧹 Grep for accidental secret leak in diff
+        env:
+          CODE_ENCRYPTION_PASSWORD: ${{ secrets.CODE_ENCRYPTION_PASSWORD }}
+        run: |
+          set -e
+          # Nothing in the diff should contain the raw password.
+          # Using git grep on staged diff would need it staged first;
+          # scan the on-disk files instead.
+          if git diff --name-only | grep -q .; then
+            if grep -R --binary-files=without-match --fixed-strings "$CODE_ENCRYPTION_PASSWORD" daily.py daily9.py; then
+              echo "❌ FATAL: secret appears literally in encrypted output. Aborting."
+              exit 1
+            fi
+          fi
+          echo "✅ No plaintext secret in modified files"
+
+      # ---------------------------------------------------------
+      # COMMIT + PUSH (only the two .py files)
+      # ---------------------------------------------------------
+      - name: 💾 Commit & push
+        run: |
+          set -e
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add daily.py daily9.py
+
+          if git diff --cached --quiet; then
+            echo "ℹ️ No changes — files were already encrypted. Nothing to commit."
+            exit 0
+          fi
+
+          git commit -m "chore: encrypt daily.py + daily9.py (AES-256-GCM)"
+
+          MAX_TRIES=5
+          TRY=1
+          while [ $TRY -le $MAX_TRIES ]; do
+            echo "🔄 Push attempt $TRY / $MAX_TRIES"
+            git fetch origin main
+            if git pull --rebase origin main; then
+              if git push origin main; then
+                echo "✅ Push successful"
+                exit 0
+              fi
+            else
+              echo "⚠️ Rebase conflict — aborting"
+              git rebase --abort || true
+            fi
+            TRY=$((TRY + 1))
+            sleep 3
+          done
+          echo "❌ Push failed after $MAX_TRIES attempts"
+          exit 1
+
+      # ---------------------------------------------------------
+      # FINAL REPORT
+      # ---------------------------------------------------------
+      - name: 📊 Final report
+        if: always()
+        run: |
+          echo "================================"
+          echo "  ENCRYPTION REPORT"
+          echo "================================"
+          echo
+          echo "→ File state after run:"
+          for f in daily.py daily9.py; do
+            if [ -f "$f" ]; then
+              head=$(head -c6 "$f")
+              size=$(wc -c < "$f")
+              if [ "$head" = "PYENC1" ]; then
+                echo "   🔐 $f — encrypted (${size} bytes)"
+              else
+                echo "   📄 $f — plaintext (${size} bytes)"
+              fi
+            else
+              echo "   ❌ $f — MISSING"
+            fi
+          done
+          echo
+          echo "→ Latest commit:"
+          git log -1 --pretty=format:'   %H%n   %s%n   %an <%ae>%n   %ad' || true
+          echo
+          echo "→ Commit SHA (short): $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+          echo
+          echo "→ Next steps:"
+          echo "   1. Add decrypt step to shards job in each workflow:"
+          echo "        dailymain.yml / advancemain.yml / advancefar.yml / customadv.yml"
+          echo "   2. Commit and push those YAML changes"
+          echo "   3. Restore any paused cron schedules"
+          echo
+          echo "================================"

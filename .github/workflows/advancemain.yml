@@ -1,0 +1,380 @@
+name: BMS Advance 1to9 + Combine
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 * * * *"
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  PRIVATE_REPO: unknownman2024/assetz
+
+jobs:
+
+# =====================================================
+# 0️⃣ PRECHECK + ADVANCE DATE CONFIG
+# =====================================================
+  precheck:
+    name: Precheck + advance date config
+    runs-on: ubuntu-latest
+    outputs:
+      should_run:    ${{ steps.check.outputs.should_run }}
+      date_code:     ${{ steps.datecfg.outputs.date_code }}
+      date_district: ${{ steps.datecfg.outputs.date_district }}
+      base_dir:      ${{ steps.datecfg.outputs.base_dir }}
+      log_root:      ${{ steps.datecfg.outputs.log_root }}
+
+    steps:
+      - name: Check running advance workflows
+        id: check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runs = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner, repo: context.repo.repo,
+              workflow_id: "advancemain.yml", status: "in_progress", per_page: 100
+            });
+            const otherRuns = runs.data.workflow_runs.filter(r => r.id !== context.runId);
+            core.setOutput("should_run", otherRuns.length > 0 ? "false" : "true");
+
+      - name: Compute tomorrow IST + paths
+        id: datecfg
+        run: |
+          python3 << 'PYEOF'
+          import os
+          from datetime import datetime, timezone, timedelta
+
+          IST    = timezone(timedelta(hours=5, minutes=30))
+          today  = datetime.now(IST).date()
+          target = today + timedelta(days=1)
+
+          date_code     = target.strftime("%Y%m%d")
+          date_district = target.strftime("%Y-%m-%d")
+
+          base_dir = f"output/advance/data/{date_code}"
+          log_root = "output/advance/logs"
+
+          print(f"📅 MODE=advance  target={date_district}  cutoff=99999")
+          print(f"📁 base_dir={base_dir}")
+
+          out = os.environ["GITHUB_OUTPUT"]
+          with open(out, "a") as f:
+              f.write(f"date_code={date_code}\n")
+              f.write(f"date_district={date_district}\n")
+              f.write(f"base_dir={base_dir}\n")
+              f.write(f"log_root={log_root}\n")
+          PYEOF
+
+# =====================================================
+# 1️⃣ SHARDS
+# =====================================================
+  shards:
+    name: Shard ${{ matrix.shard }}
+    needs: precheck
+    if: needs.precheck.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1,2,3,4,5,6,7,8,9]
+
+    steps:
+      - name: 🧾 Checkout public code repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🧾 Checkout private assetz repo (into output/)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PRIVATE_REPO }}
+          token:      ${{ secrets.PRIVATE_REPO_PAT }}
+          path:       output
+          fetch-depth: 0
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 🔓 Decrypt Python files
+        env:
+          CODE_ENCRYPTION_PASSWORD: ${{ secrets.CODE_ENCRYPTION_PASSWORD }}
+        run: |
+          if [ -z "${CODE_ENCRYPTION_PASSWORD:-}" ]; then
+            echo "❌ CODE_ENCRYPTION_PASSWORD secret not set"
+            exit 1
+          fi
+          python3 -m pip install --quiet --disable-pip-version-check cryptography
+          python3 - <<'PYEOF'
+          import os, sys
+          from pathlib import Path
+          from cryptography.hazmat.primitives import hashes
+          from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+          from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+          MAGIC       = b"PYENC1"
+          SALT_LEN    = 16
+          NONCE_LEN   = 12
+          PBKDF2_ITER = 600_000
+
+          pw = os.environ.get("CODE_ENCRYPTION_PASSWORD", "")
+          if not pw:
+              print("❌ CODE_ENCRYPTION_PASSWORD not set")
+              sys.exit(1)
+          password = pw.encode()
+
+          count = 0
+          for path in Path(".").glob("*.py"):
+              data = path.read_bytes()
+              if not data.startswith(MAGIC):
+                  continue
+              body  = data[len(MAGIC):]
+              salt  = body[:SALT_LEN]
+              nonce = body[SALT_LEN:SALT_LEN+NONCE_LEN]
+              ct    = body[SALT_LEN+NONCE_LEN:]
+              try:
+                  kdf = PBKDF2HMAC(
+                      algorithm=hashes.SHA256(),
+                      length=32,
+                      salt=salt,
+                      iterations=PBKDF2_ITER,
+                  )
+                  key = kdf.derive(password)
+                  pt  = AESGCM(key).decrypt(nonce, ct, None)
+              except Exception as e:
+                  print(f"❌ decrypt failed for {path}: {type(e).__name__}")
+                  sys.exit(1)
+              path.write_bytes(pt)
+              count += 1
+          print(f"✅ Decrypted {count} Python file(s)")
+          PYEOF
+
+      - name: 📦 Install deps (shards 1–8)
+        if: matrix.shard != 9
+        run: pip install curl_cffi
+
+      - name: 📦 Install deps (shard 9)
+        if: matrix.shard == 9
+        run: pip install pytz
+
+      - name: 🚀 Run shard 1–8 (daily.py) — advance fresh
+        if: matrix.shard != 9
+        env:
+          SHARD_ID:       ${{ matrix.shard }}
+          MODE:           advance
+          DATE_CODE:      ${{ needs.precheck.outputs.date_code }}
+          BASE_DIR:       ${{ needs.precheck.outputs.base_dir }}
+          CUTOFF_MINUTES: "99999"
+        run: python daily.py
+
+      - name: 🚀 Run shard 9 (daily9.py) — advance fresh
+        if: matrix.shard == 9
+        env:
+          MODE:                    advance
+          DATE_CODE:               ${{ needs.precheck.outputs.date_code }}
+          DATE_DISTRICT:           ${{ needs.precheck.outputs.date_district }}
+          BASE_DIR:                ${{ needs.precheck.outputs.base_dir }}
+          CUTOFF_MINUTES_DISTRICT: "99999"
+        run: python daily9.py
+
+      - name: 💾 Commit & push advance data to assetz
+        working-directory: output
+        run: |
+          git config user.name  "github-actions"
+          git config user.email "actions@github.com"
+
+          git add advance/
+          if git diff --cached --quiet; then
+            echo "ℹ️ No changes"
+            exit 0
+          fi
+
+          git commit -m "BMS advance shard ${{ matrix.shard }} — ${{ needs.precheck.outputs.date_district }} (fresh)"
+
+          for i in 1 2 3 4 5; do
+            git pull --rebase origin main || true
+            if git push origin main; then
+              echo "✅ Shard push successful"
+              exit 0
+            fi
+            echo "⚠️ Push failed — retrying"
+            sleep 3
+          done
+          git push --force-with-lease origin main || true
+
+# =====================================================
+# 2️⃣ COMBINER
+# =====================================================
+  combine:
+    name: Combine advance shards (Safe)
+    needs: [precheck, shards]
+    if: always() && needs.precheck.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: bms-advance-combiner
+      cancel-in-progress: false
+
+    steps:
+      - name: 🔍 Active-run check
+        id: active_check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runs = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner, repo: context.repo.repo,
+              workflow_id: "advancemain.yml", status: "in_progress", per_page: 100
+            });
+            const otherRuns = runs.data.workflow_runs.filter(r => r.id !== context.runId);
+            core.setOutput("skip", otherRuns.length > 0 ? "true" : "false");
+
+      - name: 🛑 Skip combiner
+        if: steps.active_check.outputs.skip == 'true'
+        run: echo "🚫 Another advance run active — skipping." && exit 0
+
+      - name: 🧾 Checkout public code repo
+        if: steps.active_check.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🧾 Checkout private assetz repo
+        if: steps.active_check.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PRIVATE_REPO }}
+          token:      ${{ secrets.PRIVATE_REPO_PAT }}
+          path:       output
+          fetch-depth: 0
+
+      - name: 🐍 Setup Python
+        if: steps.active_check.outputs.skip != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 🔁 Safe combine + push
+        if: steps.active_check.outputs.skip != 'true'
+        env:
+          MODE:          advance
+          DATE_CODE:     ${{ needs.precheck.outputs.date_code }}
+          DATE_DISTRICT: ${{ needs.precheck.outputs.date_district }}
+          BASE_DIR:      ${{ needs.precheck.outputs.base_dir }}
+          LOG_ROOT:      ${{ needs.precheck.outputs.log_root }}
+        run: |
+          set -e
+          pip install pytz
+
+          MAX_TRIES=6
+          TRY=1
+          while [ $TRY -le $MAX_TRIES ]; do
+            echo "🔁 Advance combine attempt $TRY / $MAX_TRIES"
+
+            cd output
+            git config user.name  "github-actions"
+            git config user.email "actions@github.com"
+            git fetch origin main && git reset --hard origin/main
+
+            cd ..
+            python combine_dailyshards.py
+
+            cd output
+            git add advance/
+            if git diff --cached --quiet; then
+              echo "✅ No changes after combine"
+              exit 0
+            fi
+
+            git commit -m "Final combined advance BMS — ${{ needs.precheck.outputs.date_district }} (fresh)"
+
+            if git push origin main; then
+              echo "✅ Combine push successful"
+              exit 0
+            fi
+            echo "⚠️ Push failed — retrying"
+            TRY=$((TRY+1))
+            sleep 5
+          done
+          echo "❌ Combine failed after $MAX_TRIES attempts"
+          exit 1
+
+# =====================================================
+# 3️⃣ AUTO RETRY COMBINER
+# =====================================================
+  retry-combine:
+    name: Auto retry advance combiner
+    needs: [precheck, combine]
+    if: always() && needs.combine.result == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: bms-advance-combiner
+      cancel-in-progress: false
+
+    steps:
+      - name: 🧾 Checkout public code repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🧾 Checkout private assetz repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PRIVATE_REPO }}
+          token:      ${{ secrets.PRIVATE_REPO_PAT }}
+          path:       output
+          fetch-depth: 0
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 🔁 Retry combine + push
+        env:
+          MODE:          advance
+          DATE_CODE:     ${{ needs.precheck.outputs.date_code }}
+          DATE_DISTRICT: ${{ needs.precheck.outputs.date_district }}
+          BASE_DIR:      ${{ needs.precheck.outputs.base_dir }}
+          LOG_ROOT:      ${{ needs.precheck.outputs.log_root }}
+        run: |
+          set -e
+          pip install pytz
+
+          MAX_TRIES=6
+          TRY=1
+          while [ $TRY -le $MAX_TRIES ]; do
+            echo "🔁 AUTO RETRY — Advance combine attempt $TRY / $MAX_TRIES"
+
+            cd output
+            git config user.name  "github-actions"
+            git config user.email "actions@github.com"
+            git fetch origin main && git reset --hard origin/main
+
+            cd ..
+            python combine_dailyshards.py
+
+            cd output
+            git add advance/
+            if git diff --cached --quiet; then
+              echo "✅ No changes after retry combine"
+              exit 0
+            fi
+
+            git commit -m "Final combined advance BMS — ${{ needs.precheck.outputs.date_district }} — retry"
+
+            if git push origin main; then
+              echo "✅ AUTO RETRY COMBINE PUSH SUCCESSFUL"
+              exit 0
+            fi
+            echo "⚠️ Retry push failed"
+            TRY=$((TRY+1))
+            sleep 5
+          done
+          echo "❌ Auto retry combiner failed after $MAX_TRIES attempts"
+          exit 1

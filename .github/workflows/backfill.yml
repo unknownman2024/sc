@@ -1,0 +1,108 @@
+name: BMS Backfill from Advance (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'YYYYMMDD (empty = today IST)'
+        required: false
+        default: ''
+      cutoff:
+        description: 'Inclusive show-time cutoff'
+        required: false
+        default: '11:00 AM'
+      dry_run:
+        description: 'Dry run (no commit)'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  PRIVATE_REPO: unknownman2024/assetz
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 🧾 Checkout public code repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🧾 Checkout private assetz repo (into output/)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PRIVATE_REPO }}
+          token:      ${{ secrets.PRIVATE_REPO_PAT }}
+          path:       output
+          fetch-depth: 0
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 📦 Install deps
+        run: pip install pytz
+
+      - name: 🔁 Run backfill
+        id: run
+        env:
+          INPUT_DATE:   ${{ github.event.inputs.date }}
+          INPUT_CUTOFF: ${{ github.event.inputs.cutoff }}
+          INPUT_DRY:    ${{ github.event.inputs.dry_run }}
+        run: |
+          set -euo pipefail
+
+          DATE_ARG="${INPUT_DATE:-$(TZ=Asia/Kolkata date +%Y%m%d)}"
+          CUTOFF_ARG="${INPUT_CUTOFF:-11:00 AM}"
+
+          EXTRA=""
+          if [ "${INPUT_DRY:-true}" = "true" ]; then
+            EXTRA="--dry-run"
+          fi
+
+          echo "date   = $DATE_ARG"
+          echo "cutoff = $CUTOFF_ARG"
+          echo "extra  = $EXTRA"
+
+          python backfill_from_advance.py \
+            --root output \
+            --date "$DATE_ARG" \
+            --cutoff "$CUTOFF_ARG" \
+            $EXTRA
+
+      - name: 💾 Commit & push
+        if: github.event.inputs.dry_run != 'true'
+        working-directory: output
+        run: |
+          git config user.name  "github-actions"
+          git config user.email "actions@github.com"
+
+          git add daily/
+          if git diff --cached --quiet; then
+            echo "ℹ️ No changes to commit"
+            exit 0
+          fi
+
+          git commit -m "backfill: advance→daily for ${{ github.event.inputs.date || 'today' }} (≤ ${{ github.event.inputs.cutoff }})"
+
+          for i in 1 2 3 4 5; do
+            git pull --rebase origin main || true
+            if git push origin main; then
+              echo "✅ Push successful"
+              exit 0
+            fi
+            echo "⚠️ Push failed — retrying"
+            sleep 3
+          done
+          git push --force-with-lease origin main || true
