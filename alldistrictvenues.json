@@ -1,5 +1,93 @@
 [
   {
+    "name": "Magic Frames Cinemas Parappa",
+    "address": "Parappa, Kasaragod, Kerala 671533, India",
+    "id": 1102330,
+    "pincode": "671533",
+    "latitude": 0,
+    "longitude": 0,
+    "city": "Kasaragod",
+    "state": "kerala",
+    "chainKey": "MagicFrames"
+  },
+  {
+    "name": "Dreambig Cinemas Mayukh",
+    "address": "Vadakkencherry Main Road, Near Sree Krishna Temple, Vadakkencherry, Palakkad, Kerala 678683, India",
+    "id": 1102478,
+    "pincode": "678683",
+    "latitude": 0,
+    "longitude": 0,
+    "city": "Vadakkencherry",
+    "state": "kerala",
+    "chainKey": "DreamBig"
+  },
+  {
+    "name": "DreamBig KAM Movies Vadakkencherry",
+    "address": "2nd Floor, KAM Plaza, Main Road, Vadakkencherry, Palakkad, Kerala 678683, India",
+    "id": 1102477,
+    "pincode": "678683",
+    "latitude": 0,
+    "longitude": 0,
+    "city": "Vadakkencherry",
+    "state": "kerala",
+    "chainKey": "DreamBig"
+  },
+  {
+    "name": "Girija Theatre 2K 3D Dolby Atmos Thrissur",
+    "address": "Near Nalinam Auditorium, Patturaikkal, Thrissur, Kerala 680022, India",
+    "id": 1102370,
+    "pincode": "680022",
+    "latitude": 0,
+    "longitude": 0,
+    "city": "Thrissur",
+    "state": "kerala",
+    "chainKey": "Girija"
+  },
+  {
+    "name": "DreamBig Thankam Cinemas Vadakkencherry",
+    "address": "Vadakkencherry Road, Next to Q7 Bakery, Vadakkencherry, Palakkad, Kerala 678683, India",
+    "id": 1102476,
+    "pincode": "678683",
+    "latitude": 0,
+    "longitude": 0,
+    "city": "Vadakkencherry",
+    "state": "kerala",
+    "chainKey": "DreamBig"
+  },
+  {
+    "name": "DreamBig Prathibha Theatre Mavelikkara",
+    "address": "Prathibha Cinemas, Puthiyakavu, Mavelikkara, Alappuzha, Kerala 690103, India",
+    "id": 1102474,
+    "pincode": "690103",
+    "latitude": 0,
+    "longitude": 0,
+    "city": "Mavelikkara",
+    "state": "kerala",
+    "chainKey": "DreamBig"
+  },
+  {
+    "name": "Pathuva Cinemas Angamaly",
+    "address": "SH 1, Angamaly, Ernakulam, Kerala 683572, India",
+    "id": 1102453,
+    "pincode": "683572",
+    "latitude": 0,
+    "longitude": 0,
+    "city": "Angamaly",
+    "state": "kerala",
+    "chainKey": "Pathuva"
+  },
+  {
+    "name": "DreamBig Jawahar Cinemas Kalady",
+    "address": "Kalady Malayattoor Road, Thalayattumpilli, Kalady, Ernakulam, Kerala 683574, India",
+    "id": 1102475,
+    "pincode": "683574",
+    "latitude": 0,
+    "longitude": 0,
+    "city": "Kalady",
+    "state": "kerala",
+    "chainKey": "DreamBig"
+  },
+  {
     "name": "Movie Max Kannur",
     "address": "119G/4, Sahakeri Arena, Chakkarakkal, Paduvilayi, Kannur, Kerala 670611, India",
     "id": 1102458,
